@@ -2,16 +2,33 @@
 #include "custom_types.h"
 #include <cstdio>
 #include <cstring>
+#include <vector>
+#define VK_USE_PLATFORM_WAYLAND
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-#include <vector>
+#define GLFW_EXPOSE_NATIVE_WAYLAND
+#include <GLFW/glfw3native.h>
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
                                               const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data)
 {
-    printf("\033[31m[Vulkan Validation Layer]: \033[0m %s\n", callback_data->pMessage);
+    if (severity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+    {
+        printf("\033[31m[Vulkan Validation Layer]: \033[0m %s\n", callback_data->pMessage);
+    }
+
+    else if (severity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+    {
+        printf("\033[93m[Vulkan Validation Layer]: \033[0m %s\n", callback_data->pMessage);
+    }
+
+    else
+    {
+        printf("\033[96m[Vulkan Validation Layer]: \033[0m %s\n", callback_data->pMessage);
+    }
+
     return VK_FALSE;
 }
 
@@ -44,12 +61,24 @@ class Window
 class VulkanApp
 {
   private:
+    struct QueueFamilyInfo
+    {
+        std::vector<VkQueueFamilyProperties> families;
+        u32 graphics_index;
+        VkQueue graphics_queue;
+    };
+
+  private:
     std::vector<char const *> instance_extensions = {"VK_EXT_debug_utils"};
     std::vector<char const *> instance_layers = {"VK_LAYER_KHRONOS_validation"};
+    std::vector<const char *> device_extensions = {"VK_KHR_swapchain", "VK_EXT_extended_dynamic_state"};
 
-    VkInstance instance;
-    VkDebugUtilsMessengerEXT debug_messenger;
-    VkPhysicalDevice physical_device;
+    VkInstance instance = 0;
+    VkDebugUtilsMessengerEXT debug_messenger = 0;
+    VkPhysicalDevice physical_device = 0;
+    QueueFamilyInfo queue_family_info = {};
+    VkDevice device = 0;
+    VkSurfaceKHR surface = 0;
 
   private:
     void create_instance()
@@ -179,11 +208,11 @@ class VulkanApp
         {
             vkGetPhysicalDeviceFeatures2(candidate_devices[i], &candidate_features);
             vkGetPhysicalDeviceProperties2(candidate_devices[i], &candidate_properties);
-            u32 queue_family_count;
-            vkGetPhysicalDeviceQueueFamilyProperties(candidate_devices[i], &queue_family_count, nullptr);
+            u32 candidate_family_count;
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate_devices[i], &candidate_family_count, nullptr);
             std::vector<VkQueueFamilyProperties> candidate_queue_families;
-            candidate_queue_families.resize(queue_family_count);
-            vkGetPhysicalDeviceQueueFamilyProperties(candidate_devices[i], &queue_family_count, candidate_queue_families.data());
+            candidate_queue_families.resize(candidate_family_count);
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate_devices[i], &candidate_family_count, candidate_queue_families.data());
 
             if (candidate_properties.properties.apiVersion < VK_API_VERSION_1_3)
             {
@@ -191,7 +220,7 @@ class VulkanApp
             }
 
             bool graphics_supported = false;
-            for (i32 j = 0; j < queue_family_count; j++)
+            for (i32 j = 0; j < candidate_family_count; j++)
             {
                 if (candidate_queue_families[j].queueFlags & VK_QUEUE_GRAPHICS_BIT)
                 {
@@ -232,15 +261,69 @@ class VulkanApp
         return;
     }
 
+    void create_device()
+    {
+        u32 queue_family_count;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
+        queue_family_info.families.resize(queue_family_count);
+
+        for (i32 i = 0; i < queue_family_info.families.size(); i++)
+        {
+            if (queue_family_info.families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            {
+                queue_family_info.graphics_index = i;
+                break;
+            }
+        }
+
+        f32 queue_priority = 0.5f;
+        VkDeviceQueueCreateInfo queue_create_info = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        queue_create_info.queueCount = 1;
+        queue_create_info.pQueuePriorities = &queue_priority;
+        queue_create_info.queueFamilyIndex = queue_family_info.graphics_index;
+
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT EDS_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+        VkPhysicalDeviceVulkan13Features vulkan_13_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &EDS_features};
+        VkPhysicalDeviceVulkan11Features vulkan_11_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &vulkan_13_features};
+        VkPhysicalDeviceFeatures2 physical_device_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &vulkan_11_features};
+
+        vulkan_11_features.shaderDrawParameters = true;
+        vulkan_13_features.dynamicRendering = true;
+        EDS_features.extendedDynamicState = true;
+
+        VkDeviceCreateInfo device_create_info = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+        device_create_info.pNext = &physical_device_features;
+        device_create_info.queueCreateInfoCount = 1;
+        device_create_info.pQueueCreateInfos = &queue_create_info;
+        device_create_info.enabledExtensionCount = device_extensions.size();
+        device_create_info.ppEnabledExtensionNames = device_extensions.data();
+
+        if (vkCreateDevice(physical_device, &device_create_info, nullptr, &device) != VK_SUCCESS)
+        {
+            printf("Unable to create a logical device\n");
+        }
+
+        VkDeviceQueueInfo2 queue_info = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2};
+        queue_info.queueFamilyIndex = queue_family_info.graphics_index;
+        queue_info.queueIndex = 0;
+
+        vkGetDeviceQueue2(device, &queue_info, &queue_family_info.graphics_queue);
+
+        return;
+    }
+
   public:
     VulkanApp(Window *window)
     {
         create_instance();
         create_debug_messenger();
+
         pick_physical_device();
+        create_device();
     }
     ~VulkanApp()
     {
+        vkDestroyDevice(device, nullptr);
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
             (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
         if (messenger_destroy_function == 0)
