@@ -6,6 +6,7 @@
 #define VK_USE_PLATFORM_WAYLAND
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan_wayland.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WAYLAND
@@ -66,6 +67,14 @@ class VulkanApp
         std::vector<VkQueueFamilyProperties> families;
         u32 graphics_index;
         VkQueue graphics_queue;
+        u32 presentation_index;
+        VkQueue presentation_queue;
+    };
+
+    struct SwapchainInfo
+    {
+        VkSurfaceFormatKHR surface_format;
+        VkExtent2D extent;
     };
 
   private:
@@ -79,6 +88,9 @@ class VulkanApp
     QueueFamilyInfo queue_family_info = {};
     VkDevice device = 0;
     VkSurfaceKHR surface = 0;
+    VkSwapchainKHR swapchain;
+    std::vector<VkImage> swapchain_images;
+    SwapchainInfo swapchain_info;
 
   private:
     void create_instance()
@@ -181,6 +193,20 @@ class VulkanApp
         return;
     }
 
+    void create_surface(GLFWwindow *window)
+    {
+        VkWaylandSurfaceCreateInfoKHR surface_create_info = {VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR};
+        surface_create_info.display = glfwGetWaylandDisplay();
+        surface_create_info.surface = glfwGetWaylandWindow(window);
+
+        if (vkCreateWaylandSurfaceKHR(instance, &surface_create_info, nullptr, &surface) != VK_SUCCESS)
+        {
+            printf("Failed to create wayland surface");
+        }
+
+        return;
+    }
+
     void pick_physical_device()
     {
         u32 physical_device_count = 0;
@@ -275,11 +301,25 @@ class VulkanApp
                 break;
             }
         }
+        for (i32 i = 0; i < queue_family_info.families.size(); i++)
+        {
+            if (vkGetPhysicalDeviceWaylandPresentationSupportKHR(physical_device, i, glfwGetWaylandDisplay()) == VK_TRUE)
+            {
+                queue_family_info.presentation_index = i;
+                break;
+            }
+        }
 
-        f32 queue_priority = 0.5f;
+        if (queue_family_info.graphics_index != queue_family_info.presentation_index)
+        {
+            printf("Graphics and presentation queues are different\n");
+        }
+
         VkDeviceQueueCreateInfo queue_create_info = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        f32 queue_priority = 0.5f;
         queue_create_info.queueCount = 1;
         queue_create_info.pQueuePriorities = &queue_priority;
+
         queue_create_info.queueFamilyIndex = queue_family_info.graphics_index;
 
         VkPhysicalDeviceExtendedDynamicStateFeaturesEXT EDS_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
@@ -309,7 +349,100 @@ class VulkanApp
 
         vkGetDeviceQueue2(device, &queue_info, &queue_family_info.graphics_queue);
 
+        queue_info.queueFamilyIndex = queue_family_info.presentation_index;
+        queue_info.queueIndex = 0;
+
+        vkGetDeviceQueue2(device, &queue_info, &queue_family_info.presentation_queue);
+
         return;
+    }
+
+    void create_swapchain(GLFWwindow *window)
+    {
+        VkSurfaceCapabilitiesKHR surface_capabilities = {VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities);
+
+        u32 surface_format_count;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &surface_format_count, nullptr);
+        std::vector<VkSurfaceFormatKHR> surface_formats;
+        surface_formats.resize(surface_format_count);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &surface_format_count, surface_formats.data());
+
+        u32 present_mode_count;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, nullptr);
+        std::vector<VkPresentModeKHR> present_modes;
+        present_modes.resize(present_mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, present_modes.data());
+
+        VkSurfaceFormatKHR surface_format = surface_formats[0];
+        for (i32 i = 0; i < surface_formats.size(); i++)
+        {
+            if ((surface_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB) && (surface_formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR))
+            {
+                surface_format = surface_formats[i];
+            }
+        }
+
+        VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        for (i32 i = 0; i < present_modes.size(); i++)
+        {
+            if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            {
+                present_mode = present_modes[i];
+            }
+        }
+
+        VkExtent2D swap_extent;
+
+        i32 height, width;
+        glfwGetFramebufferSize(window, &width, &height);
+        swap_extent.height = height;
+        swap_extent.width = width;
+        if (swap_extent.height < surface_capabilities.minImageExtent.height)
+        {
+            swap_extent.height = surface_capabilities.minImageExtent.height;
+        }
+        if (swap_extent.width < surface_capabilities.minImageExtent.width)
+        {
+            swap_extent.width = surface_capabilities.minImageExtent.width;
+        }
+        if (swap_extent.height > surface_capabilities.maxImageExtent.height)
+        {
+            swap_extent.height = surface_capabilities.maxImageExtent.height;
+        }
+        if (swap_extent.width > surface_capabilities.maxImageExtent.width)
+        {
+            swap_extent.width = surface_capabilities.maxImageExtent.width;
+        }
+
+        u32 image_count = surface_capabilities.minImageCount + 1;
+        if (image_count > surface_capabilities.maxImageCount)
+        {
+            image_count = surface_capabilities.maxImageCount;
+        }
+
+        VkSwapchainCreateInfoKHR swapchain_create_info = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+        swapchain_create_info.surface = surface;
+        swapchain_create_info.minImageCount = image_count;
+        swapchain_create_info.imageFormat = surface_format.format;
+        swapchain_create_info.imageColorSpace = surface_format.colorSpace;
+        swapchain_create_info.imageExtent = swap_extent;
+        swapchain_create_info.imageArrayLayers = 1;
+        swapchain_create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        swapchain_create_info.preTransform = surface_capabilities.currentTransform;
+        swapchain_create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        swapchain_create_info.presentMode = present_mode;
+        swapchain_create_info.clipped = true;
+
+        vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain);
+        u32 swapchain_image_count;
+        vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, nullptr);
+        swapchain_images.resize(swapchain_image_count);
+        vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, swapchain_images.data());
+
+        swapchain_info.extent = swap_extent;
+        swapchain_info.surface_format = surface_format;
     }
 
   public:
@@ -317,13 +450,16 @@ class VulkanApp
     {
         create_instance();
         create_debug_messenger();
-
+        create_surface(window->get_glfw_window());
         pick_physical_device();
         create_device();
+        create_swapchain(window->get_glfw_window());
     }
     ~VulkanApp()
     {
+        vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyDevice(device, nullptr);
+        vkDestroySurfaceKHR(instance, surface, nullptr);
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
             (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
         if (messenger_destroy_function == 0)
