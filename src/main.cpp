@@ -91,6 +91,7 @@ class VulkanApp
     VkSwapchainKHR swapchain;
     std::vector<VkImage> swapchain_images;
     SwapchainInfo swapchain_info;
+    std::vector<VkImageView> swapchain_image_views;
 
   private:
     void create_instance()
@@ -445,6 +446,24 @@ class VulkanApp
         swapchain_info.surface_format = surface_format;
     }
 
+    void create_image_views()
+    {
+        swapchain_image_views.resize(swapchain_images.size());
+        VkImageViewCreateInfo IVC_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        IVC_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        IVC_info.format = swapchain_info.surface_format.format;
+        IVC_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        IVC_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                               VK_COMPONENT_SWIZZLE_IDENTITY};
+        IVC_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        for (i32 i = 0; i < swapchain_images.size(); i++)
+        {
+            IVC_info.image = swapchain_images[i];
+            vkCreateImageView(device, &IVC_info, nullptr, &swapchain_image_views[i]);
+        }
+    }
+
   public:
     VulkanApp(Window *window)
     {
@@ -454,9 +473,14 @@ class VulkanApp
         pick_physical_device();
         create_device();
         create_swapchain(window->get_glfw_window());
+        create_image_views();
     }
     ~VulkanApp()
     {
+        for (i32 i = 0; i < swapchain_image_views.size(); i++)
+        {
+            vkDestroyImageView(device, swapchain_image_views[i], nullptr);
+        }
         vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
