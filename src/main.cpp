@@ -11,7 +11,7 @@
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
                                               const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data)
 {
-    printf("\n\033[31m[Vulkan Validation Layer]: \033[0m %s\n\n", callback_data->pMessage);
+    printf("\033[31m[Vulkan Validation Layer]: \033[0m %s\n", callback_data->pMessage);
     return VK_FALSE;
 }
 
@@ -46,8 +46,10 @@ class VulkanApp
   private:
     std::vector<char const *> instance_extensions = {"VK_EXT_debug_utils"};
     std::vector<char const *> instance_layers = {"VK_LAYER_KHRONOS_validation"};
+
     VkInstance instance;
     VkDebugUtilsMessengerEXT debug_messenger;
+    VkPhysicalDevice physical_device;
 
   private:
     void create_instance()
@@ -150,15 +152,96 @@ class VulkanApp
         return;
     }
 
+    void pick_physical_device()
+    {
+        u32 physical_device_count = 0;
+        vkEnumeratePhysicalDevices(instance, &physical_device_count, nullptr);
+        if (physical_device_count == 0)
+        {
+            printf("No physical devices with vulkan support found");
+        }
+        std::vector<VkPhysicalDevice> candidate_devices;
+        candidate_devices.resize(physical_device_count);
+        vkEnumeratePhysicalDevices(instance, &physical_device_count, candidate_devices.data());
+
+        std::vector<bool> device_rank; // Ordinarily this would be an integer, in our case the GPU is either suitable or it isn't.
+        for (i32 i = 0; i < physical_device_count; i++)
+        {
+            device_rank.push_back(true);
+        }
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT EDS_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+        VkPhysicalDeviceVulkan13Features vulkan_13_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &EDS_features};
+        VkPhysicalDeviceVulkan11Features vulkan_11_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &vulkan_13_features};
+        VkPhysicalDeviceFeatures2 candidate_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &vulkan_11_features};
+        VkPhysicalDeviceProperties2 candidate_properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+
+        for (i32 i = 0; i < physical_device_count; i++)
+        {
+            vkGetPhysicalDeviceFeatures2(candidate_devices[i], &candidate_features);
+            vkGetPhysicalDeviceProperties2(candidate_devices[i], &candidate_properties);
+            u32 queue_family_count;
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate_devices[i], &queue_family_count, nullptr);
+            std::vector<VkQueueFamilyProperties> candidate_queue_families;
+            candidate_queue_families.resize(queue_family_count);
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate_devices[i], &queue_family_count, candidate_queue_families.data());
+
+            if (candidate_properties.properties.apiVersion < VK_API_VERSION_1_3)
+            {
+                device_rank[i] = false;
+            }
+
+            bool graphics_supported = false;
+            for (i32 j = 0; j < queue_family_count; j++)
+            {
+                if (candidate_queue_families[j].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                {
+                    graphics_supported = true;
+                }
+            }
+            if (!graphics_supported)
+            {
+                device_rank[i] = false;
+            }
+            if (!vulkan_11_features.shaderDrawParameters)
+            {
+                device_rank[i] = false;
+            }
+            if (!vulkan_13_features.dynamicRendering)
+            {
+                device_rank[i] = false;
+            }
+            if (!EDS_features.extendedDynamicState)
+            {
+                device_rank[i] = false;
+            }
+        }
+
+        for (i32 i = 0; i < physical_device_count; i++)
+        {
+            if (device_rank[i])
+            {
+                physical_device = candidate_devices[i];
+                printf("Selecting physical device %d\n", i);
+                break;
+            }
+        }
+        if (physical_device == 0)
+        {
+            printf("No suitable physical device found");
+        }
+        return;
+    }
+
   public:
     VulkanApp(Window *window)
     {
         create_instance();
         create_debug_messenger();
+        pick_physical_device();
     }
     ~VulkanApp()
     {
-PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
+        PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
             (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
         if (messenger_destroy_function == 0)
         {
