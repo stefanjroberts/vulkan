@@ -101,6 +101,8 @@ class VulkanApp
     std::vector<char const *> instance_layers = {"VK_LAYER_KHRONOS_validation"};
     std::vector<const char *> device_extensions = {"VK_KHR_swapchain", "VK_EXT_extended_dynamic_state"};
 
+    Window *window;
+
     VkInstance instance = 0;
     VkDebugUtilsMessengerEXT debug_messenger = 0;
     VkPhysicalDevice physical_device = 0;
@@ -702,9 +704,22 @@ class VulkanApp
         }
     }
 
-  public:
-    VulkanApp(Window *window)
+    void recreate_swapchain()
     {
+        vkDeviceWaitIdle(device);
+        for (i32 i = 0; i < swapchain_image_views.size(); i++)
+        {
+            vkDestroyImageView(device, swapchain_image_views[i], nullptr);
+        }
+        vkDestroySwapchainKHR(device, swapchain, nullptr);
+        create_swapchain(window->get_glfw_window());
+        create_image_views();
+    }
+
+  public:
+    VulkanApp(Window *external_window)
+    {
+        window = external_window;
         create_instance();
         create_debug_messenger();
         create_surface(window->get_glfw_window());
@@ -753,12 +768,12 @@ class VulkanApp
     }
     void render()
     {
-
         u32 image_index;
         vkWaitForFences(device, 1, &fences_drawing_complete[frame_index], VK_TRUE, UINT64_MAX);
-        vkResetFences(device, 1, &fences_drawing_complete[frame_index]);
 
-        vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphores_presentation_complete[frame_index], nullptr, &image_index);
+        VkResult acquire_next_image_result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphores_presentation_complete[frame_index], nullptr, &image_index);
+
+        vkResetFences(device, 1, &fences_drawing_complete[frame_index]);
 
         vkResetCommandBuffer(command_buffers[frame_index], 0);
         record_command_buffer(command_buffers[frame_index], image_index);
@@ -786,6 +801,11 @@ class VulkanApp
         vkQueuePresentKHR(queue_family_info.presentation_queue, &present_info);
 
         frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
+
+        if (acquire_next_image_result == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            recreate_swapchain(); // TODO: There is no easy way to debug this currently on my system, need to test on other devices.
+        }
 
         return;
     }
