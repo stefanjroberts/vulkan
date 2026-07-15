@@ -113,6 +113,7 @@ class VulkanApp
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
     VkCommandPool command_pool;
+    VkCommandBuffer command_buffer;
 
   private:
     void create_instance()
@@ -591,6 +592,83 @@ class VulkanApp
         }
     }
 
+    void create_command_buffer()
+    {
+        VkCommandBufferAllocateInfo command_buffer_allocate_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        command_buffer_allocate_info.commandPool = command_pool;
+        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        command_buffer_allocate_info.commandBufferCount = 1;
+        vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &command_buffer);
+    }
+
+    void transition_image_layout(u32 image_index, VkImageLayout old_layout, VkImageLayout new_layout, VkAccessFlags2 src_access_mask,
+                                 VkAccessFlags2 dest_access_mask, VkPipelineStageFlags2 src_stage_mask, VkPipelineStageFlags2 dest_stage_mask)
+    {
+        VkImageMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                         nullptr,
+                                         src_stage_mask,
+                                         src_access_mask,
+                                         dest_stage_mask,
+                                         dest_access_mask,
+                                         old_layout,
+                                         new_layout,
+                                         VK_QUEUE_FAMILY_IGNORED,
+                                         VK_QUEUE_FAMILY_IGNORED,
+                                         swapchain_images[image_index],
+                                         {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkDependencyInfo dependency_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency_info.dependencyFlags = {};
+        dependency_info.imageMemoryBarrierCount = 1;
+        dependency_info.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
+
+    void record_command_buffer(u32 image_index)
+    {
+        VkCommandBufferBeginInfo command_buffer_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
+
+        transition_image_layout(image_index, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, {},
+                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+        VkClearValue clear_color = {1.0f, 1.0f, 0.0f, 1.0f};
+        VkRenderingAttachmentInfo attachment_info = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        attachment_info.imageView = swapchain_image_views[image_index];
+        attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachment_info.clearValue = clear_color;
+
+        VkRenderingInfo rendering_info = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+        rendering_info.renderArea = {{0, 0}, swapchain_info.extent};
+        rendering_info.layerCount = 1;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachments = &attachment_info;
+
+        vkCmdBeginRendering(command_buffer, &rendering_info);
+
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+
+        VkViewport viewport = {0.0f, 0.0f, (f32)swapchain_info.extent.width, (f32)swapchain_info.extent.height, 0.0f, 1.0f};
+
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+        VkRect2D scissor = {{0, 0}, swapchain_info.extent};
+
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+        vkCmdEndRendering(command_buffer);
+
+        transition_image_layout(image_index, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, {}, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
+
+        vkEndCommandBuffer(command_buffer);
+    }
+
   public:
     VulkanApp(Window *window)
     {
@@ -603,6 +681,7 @@ class VulkanApp
         create_image_views();
         create_graphics_pipeline();
         create_command_pool();
+        create_command_buffer();
     }
     ~VulkanApp()
     {
@@ -627,6 +706,8 @@ class VulkanApp
     }
     void render()
     {
+        
+
         return;
     }
 };
