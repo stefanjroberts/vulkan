@@ -96,6 +96,7 @@ class VulkanApp
     };
 
   private:
+    const i32 MAX_FRAMES_IN_FLIGHT = 2;
     std::vector<char const *> instance_extensions = {"VK_EXT_debug_utils"};
     std::vector<char const *> instance_layers = {"VK_LAYER_KHRONOS_validation"};
     std::vector<const char *> device_extensions = {"VK_KHR_swapchain", "VK_EXT_extended_dynamic_state"};
@@ -113,11 +114,13 @@ class VulkanApp
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
     VkCommandPool command_pool;
-    VkCommandBuffer command_buffer;
 
-    VkSemaphore semaphore_presentation_complete;
-    VkSemaphore semaphore_rendering_finished;
-    VkFence fence_drawing_complete;
+    std::vector<VkCommandBuffer> command_buffers;
+    std::vector<VkSemaphore> semaphores_presentation_complete;
+    std::vector<VkSemaphore> semaphores_rendering_finished;
+    std::vector<VkFence> fences_drawing_complete;
+
+    u32 frame_index = 0;
 
   private:
     void create_instance()
@@ -597,17 +600,19 @@ class VulkanApp
         }
     }
 
-    void create_command_buffer()
+    void create_command_buffers()
     {
+        command_buffers.resize(MAX_FRAMES_IN_FLIGHT);
         VkCommandBufferAllocateInfo command_buffer_allocate_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         command_buffer_allocate_info.commandPool = command_pool;
         command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        command_buffer_allocate_info.commandBufferCount = 1;
-        vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &command_buffer);
+        command_buffer_allocate_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
+        vkAllocateCommandBuffers(device, &command_buffer_allocate_info, command_buffers.data());
     }
 
-    void transition_image_layout(u32 image_index, VkImageLayout old_layout, VkImageLayout new_layout, VkAccessFlags2 src_access_mask,
-                                 VkAccessFlags2 dest_access_mask, VkPipelineStageFlags2 src_stage_mask, VkPipelineStageFlags2 dest_stage_mask)
+    void transition_image_layout(VkCommandBuffer command_buffer, u32 image_index, VkImageLayout old_layout, VkImageLayout new_layout,
+                                 VkAccessFlags2 src_access_mask, VkAccessFlags2 dest_access_mask, VkPipelineStageFlags2 src_stage_mask,
+                                 VkPipelineStageFlags2 dest_stage_mask)
     {
         VkImageMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                          nullptr,
@@ -628,12 +633,12 @@ class VulkanApp
         vkCmdPipelineBarrier2(command_buffer, &dependency_info);
     }
 
-    void record_command_buffer(u32 image_index)
+    void record_command_buffer(VkCommandBuffer command_buffer, u32 image_index)
     {
         VkCommandBufferBeginInfo command_buffer_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
 
-        transition_image_layout(image_index, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, {},
+        transition_image_layout(command_buffer, image_index, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, {},
                                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
 
@@ -667,21 +672,34 @@ class VulkanApp
 
         vkCmdEndRendering(command_buffer);
 
-        transition_image_layout(image_index, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        transition_image_layout(command_buffer, image_index, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, {}, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                 VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
 
         vkEndCommandBuffer(command_buffer);
     }
 
-    void create_sync_objects(){
-        VkSemaphoreCreateInfo semaphore_create_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        vkCreateSemaphore(device, &semaphore_create_info, nullptr, &semaphore_presentation_complete);
-        vkCreateSemaphore(device, &semaphore_create_info, nullptr, &semaphore_rendering_finished);
+    void create_sync_objects()
+    {
+        semaphores_presentation_complete.resize(MAX_FRAMES_IN_FLIGHT);
+        semaphores_rendering_finished.resize(swapchain_images.size());
+        fences_drawing_complete.resize(MAX_FRAMES_IN_FLIGHT);
 
+        VkSemaphoreCreateInfo semaphore_create_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         VkFenceCreateInfo fence_create_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        vkCreateFence(device, &fence_create_info, nullptr, &fence_drawing_complete);
+
+        for (i32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vkCreateSemaphore(device, &semaphore_create_info, nullptr, &semaphores_presentation_complete[i]);
+            vkCreateFence(device, &fence_create_info, nullptr, &fences_drawing_complete[i]);
+        }
+
+        for (i32 i = 0; i < swapchain_images.size(); i++)
+        {
+
+            vkCreateSemaphore(device, &semaphore_create_info, nullptr, &semaphores_rendering_finished[i]);
+        }
     }
 
   public:
@@ -696,15 +714,24 @@ class VulkanApp
         create_image_views();
         create_graphics_pipeline();
         create_command_pool();
-        create_command_buffer();
+        create_command_buffers();
         create_sync_objects();
     }
     ~VulkanApp()
     {
         vkQueueWaitIdle(queue_family_info.graphics_queue);
-        vkDestroySemaphore(device, semaphore_presentation_complete, nullptr);
-        vkDestroySemaphore(device, semaphore_rendering_finished, nullptr);
-        vkDestroyFence(device, fence_drawing_complete, nullptr);
+        for (i32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vkDestroySemaphore(device, semaphores_presentation_complete[i], nullptr);
+            vkDestroyFence(device, fences_drawing_complete[i], nullptr);
+        }
+
+        for (i32 i = 0; i < swapchain_images.size(); i++)
+        {
+
+            vkDestroySemaphore(device, semaphores_rendering_finished[i], nullptr);
+        }
+
         vkDestroyCommandPool(device, command_pool, nullptr);
         vkDestroyPipeline(device, graphics_pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
@@ -726,36 +753,39 @@ class VulkanApp
     }
     void render()
     {
-        vkWaitForFences(device, 1, &fence_drawing_complete, VK_TRUE, UINT64_MAX);
-        vkResetFences(device, 1, &fence_drawing_complete);
 
         u32 image_index;
+        vkWaitForFences(device, 1, &fences_drawing_complete[frame_index], VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &fences_drawing_complete[frame_index]);
 
-        vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphore_presentation_complete, nullptr, &image_index);
+        vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphores_presentation_complete[frame_index], nullptr, &image_index);
 
-        record_command_buffer(image_index);
+        vkResetCommandBuffer(command_buffers[frame_index], 0);
+        record_command_buffer(command_buffers[frame_index], image_index);
 
         VkPipelineStageFlags wait_destination_stage_mask = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
 
         VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &semaphore_presentation_complete;
+        submit_info.pWaitSemaphores = &semaphores_presentation_complete[frame_index];
         submit_info.pWaitDstStageMask = &wait_destination_stage_mask;
         submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers=&command_buffer;
+        submit_info.pCommandBuffers = &command_buffers[frame_index];
         submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &semaphore_rendering_finished;
+        submit_info.pSignalSemaphores = &semaphores_rendering_finished[image_index];
 
-        vkQueueSubmit(queue_family_info.graphics_queue, 1, &submit_info, fence_drawing_complete);
+        vkQueueSubmit(queue_family_info.graphics_queue, 1, &submit_info, fences_drawing_complete[frame_index]);
 
         VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = &semaphore_rendering_finished;
+        present_info.pWaitSemaphores = &semaphores_rendering_finished[image_index];
         present_info.swapchainCount = 1;
         present_info.pSwapchains = &swapchain;
         present_info.pImageIndices = &image_index;
 
         vkQueuePresentKHR(queue_family_info.presentation_queue, &present_info);
+
+        frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
 
         return;
     }
