@@ -115,6 +115,10 @@ class VulkanApp
     VkCommandPool command_pool;
     VkCommandBuffer command_buffer;
 
+    VkSemaphore semaphore_presentation_complete;
+    VkSemaphore semaphore_rendering_finished;
+    VkFence fence_drawing_complete;
+
   private:
     void create_instance()
     {
@@ -352,6 +356,7 @@ class VulkanApp
 
         vulkan_11_features.shaderDrawParameters = true;
         vulkan_13_features.dynamicRendering = true;
+        vulkan_13_features.synchronization2 = true;
         EDS_features.extendedDynamicState = true;
 
         VkDeviceCreateInfo device_create_info = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
@@ -632,7 +637,7 @@ class VulkanApp
                                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
 
-        VkClearValue clear_color = {1.0f, 1.0f, 0.0f, 1.0f};
+        VkClearValue clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
         VkRenderingAttachmentInfo attachment_info = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         attachment_info.imageView = swapchain_image_views[image_index];
         attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -669,6 +674,16 @@ class VulkanApp
         vkEndCommandBuffer(command_buffer);
     }
 
+    void create_sync_objects(){
+        VkSemaphoreCreateInfo semaphore_create_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        vkCreateSemaphore(device, &semaphore_create_info, nullptr, &semaphore_presentation_complete);
+        vkCreateSemaphore(device, &semaphore_create_info, nullptr, &semaphore_rendering_finished);
+
+        VkFenceCreateInfo fence_create_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        vkCreateFence(device, &fence_create_info, nullptr, &fence_drawing_complete);
+    }
+
   public:
     VulkanApp(Window *window)
     {
@@ -682,9 +697,14 @@ class VulkanApp
         create_graphics_pipeline();
         create_command_pool();
         create_command_buffer();
+        create_sync_objects();
     }
     ~VulkanApp()
     {
+        vkQueueWaitIdle(queue_family_info.graphics_queue);
+        vkDestroySemaphore(device, semaphore_presentation_complete, nullptr);
+        vkDestroySemaphore(device, semaphore_rendering_finished, nullptr);
+        vkDestroyFence(device, fence_drawing_complete, nullptr);
         vkDestroyCommandPool(device, command_pool, nullptr);
         vkDestroyPipeline(device, graphics_pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
@@ -706,7 +726,36 @@ class VulkanApp
     }
     void render()
     {
-        
+        vkWaitForFences(device, 1, &fence_drawing_complete, VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &fence_drawing_complete);
+
+        u32 image_index;
+
+        vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphore_presentation_complete, nullptr, &image_index);
+
+        record_command_buffer(image_index);
+
+        VkPipelineStageFlags wait_destination_stage_mask = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+
+        VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = &semaphore_presentation_complete;
+        submit_info.pWaitDstStageMask = &wait_destination_stage_mask;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers=&command_buffer;
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = &semaphore_rendering_finished;
+
+        vkQueueSubmit(queue_family_info.graphics_queue, 1, &submit_info, fence_drawing_complete);
+
+        VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores = &semaphore_rendering_finished;
+        present_info.swapchainCount = 1;
+        present_info.pSwapchains = &swapchain;
+        present_info.pImageIndices = &image_index;
+
+        vkQueuePresentKHR(queue_family_info.presentation_queue, &present_info);
 
         return;
     }
@@ -724,7 +773,6 @@ int main()
     {
         glfwPollEvents();
         vulkan_app->render();
-        break;
     }
 
     delete vulkan_app;
