@@ -12,6 +12,31 @@
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #include <GLFW/glfw3native.h>
 
+struct Vertex
+{
+    f32 position[2];
+    f32 color[3];
+};
+
+struct VertexInfo
+{
+    u32 attribute_count = 2;
+    VkVertexInputAttributeDescription attributes[2];
+    u32 binding_count = 1;
+    VkVertexInputBindingDescription bindings[1];
+
+    VertexInfo()
+    {
+        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, position)};
+        attributes[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)};
+        bindings[0].binding = 0;
+        bindings[0].stride = sizeof(Vertex);
+        bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    }
+};
+
+const std::vector<Vertex> vertices = {{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}}, {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}}, {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}};
+
 void *open_file(const char *file_name, i32 *file_size)
 {
     FILE *fptr = fopen(file_name, "rb");
@@ -101,6 +126,8 @@ class VulkanApp
     std::vector<char const *> instance_layers = {"VK_LAYER_KHRONOS_validation"};
     std::vector<const char *> device_extensions = {"VK_KHR_swapchain", "VK_EXT_extended_dynamic_state"};
 
+    VertexInfo vertex_info;
+
     Window *window;
 
     VkInstance instance = 0;
@@ -123,6 +150,9 @@ class VulkanApp
     std::vector<VkFence> fences_drawing_complete;
 
     u32 frame_index = 0;
+
+    VkBuffer vertex_buffer;
+    VkDeviceMemory vertex_buffer_memory;
 
   private:
     void create_instance()
@@ -225,11 +255,11 @@ class VulkanApp
         return;
     }
 
-    void create_surface(GLFWwindow *window)
+    void create_surface()
     {
         VkWaylandSurfaceCreateInfoKHR surface_create_info = {VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR};
         surface_create_info.display = glfwGetWaylandDisplay();
-        surface_create_info.surface = glfwGetWaylandWindow(window);
+        surface_create_info.surface = glfwGetWaylandWindow(window->get_glfw_window());
 
         if (vkCreateWaylandSurfaceKHR(instance, &surface_create_info, nullptr, &surface) != VK_SUCCESS)
         {
@@ -390,7 +420,7 @@ class VulkanApp
         return;
     }
 
-    void create_swapchain(GLFWwindow *window)
+    void create_swapchain()
     {
         VkSurfaceCapabilitiesKHR surface_capabilities = {VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities);
@@ -428,7 +458,7 @@ class VulkanApp
         VkExtent2D swap_extent;
 
         i32 height, width;
-        glfwGetFramebufferSize(window, &width, &height);
+        glfwGetFramebufferSize(window->get_glfw_window(), &width, &height);
         swap_extent.height = height;
         swap_extent.width = width;
         if (swap_extent.height < surface_capabilities.minImageExtent.height)
@@ -526,6 +556,10 @@ class VulkanApp
         dynamic_state_create_info.pDynamicStates = dynamic_states.data();
 
         VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertex_input_state_create_info.vertexBindingDescriptionCount = vertex_info.binding_count;
+        vertex_input_state_create_info.pVertexBindingDescriptions = vertex_info.bindings;
+        vertex_input_state_create_info.vertexAttributeDescriptionCount = vertex_info.attribute_count;
+        vertex_input_state_create_info.pVertexAttributeDescriptions = vertex_info.attributes;
 
         VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         input_assembly_state_create_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -635,6 +669,49 @@ class VulkanApp
         vkCmdPipelineBarrier2(command_buffer, &dependency_info);
     }
 
+    u32 find_memory_type(u32 type_filter, VkMemoryPropertyFlags properties)
+    {
+        VkPhysicalDeviceMemoryProperties memory_properties;
+        vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+
+        for (i32 i = 0; i < memory_properties.memoryTypeCount; i++)
+        {
+            if ((type_filter & (1 << i)) && ((memory_properties.memoryTypes[i].propertyFlags & properties) == properties))
+            {
+                return i;
+            }
+        }
+        printf("No valid memory type found");
+        return -1;
+    }
+
+    void create_vertex_buffer()
+    {
+        VkBufferCreateInfo buffer_create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        buffer_create_info.size = sizeof(vertices[0]) * vertices.size();
+        buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        vkCreateBuffer(device, &buffer_create_info, nullptr, &vertex_buffer);
+
+        VkMemoryRequirements memory_requirements;
+        vkGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
+
+        VkMemoryAllocateInfo memory_allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        memory_allocate_info.allocationSize = memory_requirements.size;
+        memory_allocate_info.memoryTypeIndex =
+            find_memory_type(memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+        vkAllocateMemory(device, &memory_allocate_info, nullptr, &vertex_buffer_memory);
+
+        vkBindBufferMemory(device, vertex_buffer, vertex_buffer_memory, 0);
+
+        void *data;
+        vkMapMemory(device, vertex_buffer_memory, 0, buffer_create_info.size, 0, &data);
+        memcpy(data, vertices.data(), buffer_create_info.size);
+        vkUnmapMemory(device, vertex_buffer_memory);
+    }
+
     void record_command_buffer(VkCommandBuffer command_buffer, u32 image_index)
     {
         VkCommandBufferBeginInfo command_buffer_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -662,6 +739,10 @@ class VulkanApp
 
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
+        VkDeviceSize offsets[1] = {0};
+
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, offsets);
+
         VkViewport viewport = {0.0f, 0.0f, (f32)swapchain_info.extent.width, (f32)swapchain_info.extent.height, 0.0f, 1.0f};
 
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
@@ -670,7 +751,7 @@ class VulkanApp
 
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        vkCmdDraw(command_buffer, vertices.size(), 1, 0, 0);
 
         vkCmdEndRendering(command_buffer);
 
@@ -712,7 +793,7 @@ class VulkanApp
             vkDestroyImageView(device, swapchain_image_views[i], nullptr);
         }
         vkDestroySwapchainKHR(device, swapchain, nullptr);
-        create_swapchain(window->get_glfw_window());
+        create_swapchain();
         create_image_views();
     }
 
@@ -722,16 +803,18 @@ class VulkanApp
         window = external_window;
         create_instance();
         create_debug_messenger();
-        create_surface(window->get_glfw_window());
+        create_surface();
         pick_physical_device();
         create_device();
-        create_swapchain(window->get_glfw_window());
+        create_swapchain();
         create_image_views();
         create_graphics_pipeline();
         create_command_pool();
+        create_vertex_buffer();
         create_command_buffers();
         create_sync_objects();
     }
+
     ~VulkanApp()
     {
         vkQueueWaitIdle(queue_family_info.graphics_queue);
@@ -755,6 +838,8 @@ class VulkanApp
             vkDestroyImageView(device, swapchain_image_views[i], nullptr);
         }
         vkDestroySwapchainKHR(device, swapchain, nullptr);
+        vkDestroyBuffer(device, vertex_buffer, nullptr);
+        vkFreeMemory(device, vertex_buffer_memory, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
@@ -766,12 +851,14 @@ class VulkanApp
         messenger_destroy_function(instance, debug_messenger, nullptr);
         vkDestroyInstance(instance, nullptr);
     }
+
     void render()
     {
         u32 image_index;
         vkWaitForFences(device, 1, &fences_drawing_complete[frame_index], VK_TRUE, UINT64_MAX);
 
-        VkResult acquire_next_image_result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphores_presentation_complete[frame_index], nullptr, &image_index);
+        VkResult acquire_next_image_result =
+            vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphores_presentation_complete[frame_index], nullptr, &image_index);
 
         vkResetFences(device, 1, &fences_drawing_complete[frame_index]);
 
