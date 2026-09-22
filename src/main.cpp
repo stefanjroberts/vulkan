@@ -35,6 +35,12 @@ struct VertexInfo
     }
 };
 
+struct MemoryBuffer
+{
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+};
+
 const std::vector<Vertex> vertices = {{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}}, {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}}, {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}};
 
 void *open_file(const char *file_name, i32 *file_size)
@@ -112,6 +118,8 @@ class VulkanApp
         VkQueue graphics_queue;
         u32 presentation_index;
         VkQueue presentation_queue;
+        u32 transfer_index;
+        VkQueue transfer_queue;
     };
 
     struct SwapchainInfo
@@ -151,8 +159,7 @@ class VulkanApp
 
     u32 frame_index = 0;
 
-    VkBuffer vertex_buffer;
-    VkDeviceMemory vertex_buffer_memory;
+    MemoryBuffer vertex_buffer;
 
   private:
     void create_instance()
@@ -372,6 +379,8 @@ class VulkanApp
             }
         }
 
+        queue_family_info.transfer_index = queue_family_info.graphics_index;
+
         if (queue_family_info.graphics_index != queue_family_info.presentation_index)
         {
             printf("Graphics and presentation queues are different\n");
@@ -416,6 +425,10 @@ class VulkanApp
         queue_info.queueIndex = 0;
 
         vkGetDeviceQueue2(device, &queue_info, &queue_family_info.presentation_queue);
+
+        queue_info.queueFamilyIndex = queue_family_info.transfer_index;
+
+        vkGetDeviceQueue2(device, &queue_info, &queue_family_info.transfer_queue);
 
         return;
     }
@@ -685,31 +698,43 @@ class VulkanApp
         return -1;
     }
 
-    void create_vertex_buffer()
+    MemoryBuffer create_buffer(VkDeviceSize size, VkBufferUsageFlags usage_flags, VkMemoryPropertyFlags memory_flags)
     {
-        VkBufferCreateInfo buffer_create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        buffer_create_info.size = sizeof(vertices[0]) * vertices.size();
-        buffer_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        MemoryBuffer memory_buffer;
 
-        vkCreateBuffer(device, &buffer_create_info, nullptr, &vertex_buffer);
+        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        create_info.size = size;
+        create_info.usage = usage_flags;
+        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        vkCreateBuffer(device, &create_info, nullptr, &memory_buffer.buffer);
 
         VkMemoryRequirements memory_requirements;
-        vkGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
+        vkGetBufferMemoryRequirements(device, memory_buffer.buffer, &memory_requirements);
 
-        VkMemoryAllocateInfo memory_allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        memory_allocate_info.allocationSize = memory_requirements.size;
-        memory_allocate_info.memoryTypeIndex =
-            find_memory_type(memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocate_info.allocationSize = memory_requirements.size;
+        allocate_info.memoryTypeIndex = find_memory_type(memory_requirements.memoryTypeBits, memory_flags);
 
-        vkAllocateMemory(device, &memory_allocate_info, nullptr, &vertex_buffer_memory);
+        vkAllocateMemory(device, &allocate_info, nullptr, &memory_buffer.memory);
+        vkBindBufferMemory(device, memory_buffer.buffer, memory_buffer.memory, 0);
 
-        vkBindBufferMemory(device, vertex_buffer, vertex_buffer_memory, 0);
+        return memory_buffer;
+    }
+
+    void create_vertex_buffer()
+    {
+        VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
+
+        vertex_buffer =
+            create_buffer(buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+        
 
         void *data;
-        vkMapMemory(device, vertex_buffer_memory, 0, buffer_create_info.size, 0, &data);
-        memcpy(data, vertices.data(), buffer_create_info.size);
-        vkUnmapMemory(device, vertex_buffer_memory);
+        vkMapMemory(device, vertex_buffer.memory, 0, buffer_size, 0, &data);
+        memcpy(data, vertices.data(), buffer_size);
+        vkUnmapMemory(device, vertex_buffer.memory);
     }
 
     void record_command_buffer(VkCommandBuffer command_buffer, u32 image_index)
@@ -741,7 +766,7 @@ class VulkanApp
 
         VkDeviceSize offsets[1] = {0};
 
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer, offsets);
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer.buffer, offsets);
 
         VkViewport viewport = {0.0f, 0.0f, (f32)swapchain_info.extent.width, (f32)swapchain_info.extent.height, 0.0f, 1.0f};
 
@@ -838,8 +863,8 @@ class VulkanApp
             vkDestroyImageView(device, swapchain_image_views[i], nullptr);
         }
         vkDestroySwapchainKHR(device, swapchain, nullptr);
-        vkDestroyBuffer(device, vertex_buffer, nullptr);
-        vkFreeMemory(device, vertex_buffer_memory, nullptr);
+        vkDestroyBuffer(device, vertex_buffer.buffer, nullptr);
+        vkFreeMemory(device, vertex_buffer.memory, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
