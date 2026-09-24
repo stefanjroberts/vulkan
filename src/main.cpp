@@ -160,6 +160,7 @@ class VulkanApp
     u32 frame_index = 0;
 
     MemoryBuffer vertex_buffer;
+    MemoryBuffer staging_buffer;
 
   private:
     void create_instance()
@@ -722,19 +723,46 @@ class VulkanApp
         return memory_buffer;
     }
 
+    void copy_buffer(MemoryBuffer src_buffer, MemoryBuffer dest_buffer, VkDeviceSize buffer_size)
+    {
+        VkCommandBufferAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        allocate_info.commandPool = command_pool;
+        allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate_info.commandBufferCount = 1;
+
+        VkCommandBuffer copy_buffer;
+        vkAllocateCommandBuffers(device, &allocate_info, &copy_buffer);
+
+        VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        VkBufferCopy copy_spec = {0, 0, buffer_size};
+
+        vkBeginCommandBuffer(copy_buffer, &begin_info);
+        vkCmdCopyBuffer(copy_buffer, src_buffer.buffer, dest_buffer.buffer, 1, &copy_spec);
+        vkEndCommandBuffer(copy_buffer);
+
+        VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &copy_buffer;
+
+        vkQueueSubmit(queue_family_info.transfer_queue, 1, &submit_info, nullptr);
+    }
+
     void create_vertex_buffer()
     {
         VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
-
+        staging_buffer =
+            create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         vertex_buffer =
-            create_buffer(buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-
-        
+            create_buffer(buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         void *data;
-        vkMapMemory(device, vertex_buffer.memory, 0, buffer_size, 0, &data);
+        vkMapMemory(device, staging_buffer.memory, 0, buffer_size, 0, &data);
         memcpy(data, vertices.data(), buffer_size);
-        vkUnmapMemory(device, vertex_buffer.memory);
+        vkUnmapMemory(device, staging_buffer.memory);
+
+        copy_buffer(staging_buffer, vertex_buffer, buffer_size);
     }
 
     void record_command_buffer(VkCommandBuffer command_buffer, u32 image_index)
@@ -864,14 +892,16 @@ class VulkanApp
         }
         vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyBuffer(device, vertex_buffer.buffer, nullptr);
+        vkDestroyBuffer(device, staging_buffer.buffer, nullptr);
         vkFreeMemory(device, vertex_buffer.memory, nullptr);
+        vkFreeMemory(device, staging_buffer.memory, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
             (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
         if (messenger_destroy_function == 0)
         {
-            printf("Unable to locate debug messenger create function\n");
+            printf("Unable to locate debug messenger destroy function\n");
         }
         messenger_destroy_function(instance, debug_messenger, nullptr);
         vkDestroyInstance(instance, nullptr);
