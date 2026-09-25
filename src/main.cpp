@@ -41,7 +41,12 @@ struct MemoryBuffer
     VkDeviceMemory memory;
 };
 
-const std::vector<Vertex> vertices = {{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}}, {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}}, {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}};
+const std::vector<Vertex> vertices = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+                                      {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+                                      {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+                                      {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}};
+
+const std::vector<u16> indices = {0, 1, 2, 2, 3, 0};
 
 void *open_file(const char *file_name, i32 *file_size)
 {
@@ -160,7 +165,7 @@ class VulkanApp
     u32 frame_index = 0;
 
     MemoryBuffer vertex_buffer;
-    MemoryBuffer staging_buffer;
+    MemoryBuffer index_buffer;
 
   private:
     void create_instance()
@@ -752,7 +757,7 @@ class VulkanApp
     void create_vertex_buffer()
     {
         VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
-        staging_buffer =
+        MemoryBuffer staging_buffer =
             create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         vertex_buffer =
             create_buffer(buffer_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -763,6 +768,28 @@ class VulkanApp
         vkUnmapMemory(device, staging_buffer.memory);
 
         copy_buffer(staging_buffer, vertex_buffer, buffer_size);
+        vkDeviceWaitIdle(device);
+        vkDestroyBuffer(device, staging_buffer.buffer, nullptr);
+        vkFreeMemory(device, staging_buffer.memory, nullptr);
+    }
+
+    void create_index_buffer()
+    {
+        VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
+        MemoryBuffer staging_buffer =
+            create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        index_buffer =
+            create_buffer(buffer_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        void *data;
+        vkMapMemory(device, staging_buffer.memory, 0, buffer_size, 0, &data);
+        memcpy(data, indices.data(), buffer_size);
+        vkUnmapMemory(device, staging_buffer.memory);
+
+        copy_buffer(staging_buffer, index_buffer, buffer_size);
+        vkDeviceWaitIdle(device);
+        vkDestroyBuffer(device, staging_buffer.buffer, nullptr);
+        vkFreeMemory(device, staging_buffer.memory, nullptr);
     }
 
     void record_command_buffer(VkCommandBuffer command_buffer, u32 image_index)
@@ -795,6 +822,7 @@ class VulkanApp
         VkDeviceSize offsets[1] = {0};
 
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer.buffer, offsets);
+        vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT16);
 
         VkViewport viewport = {0.0f, 0.0f, (f32)swapchain_info.extent.width, (f32)swapchain_info.extent.height, 0.0f, 1.0f};
 
@@ -804,7 +832,7 @@ class VulkanApp
 
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-        vkCmdDraw(command_buffer, vertices.size(), 1, 0, 0);
+        vkCmdDrawIndexed(command_buffer, indices.size(), 1, 0, 0, 0);
 
         vkCmdEndRendering(command_buffer);
 
@@ -864,6 +892,7 @@ class VulkanApp
         create_graphics_pipeline();
         create_command_pool();
         create_vertex_buffer();
+        create_index_buffer();
         create_command_buffers();
         create_sync_objects();
     }
@@ -886,23 +915,27 @@ class VulkanApp
         vkDestroyCommandPool(device, command_pool, nullptr);
         vkDestroyPipeline(device, graphics_pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+
         for (i32 i = 0; i < swapchain_image_views.size(); i++)
         {
             vkDestroyImageView(device, swapchain_image_views[i], nullptr);
         }
+
         vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyBuffer(device, vertex_buffer.buffer, nullptr);
-        vkDestroyBuffer(device, staging_buffer.buffer, nullptr);
         vkFreeMemory(device, vertex_buffer.memory, nullptr);
-        vkFreeMemory(device, staging_buffer.memory, nullptr);
+        vkDestroyBuffer(device, index_buffer.buffer, nullptr);
+        vkFreeMemory(device, index_buffer.memory, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
+
         PFN_vkDestroyDebugUtilsMessengerEXT messenger_destroy_function =
             (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
         if (messenger_destroy_function == 0)
         {
             printf("Unable to locate debug messenger destroy function\n");
         }
+
         messenger_destroy_function(instance, debug_messenger, nullptr);
         vkDestroyInstance(instance, nullptr);
     }
