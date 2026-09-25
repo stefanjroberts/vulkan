@@ -11,6 +11,7 @@
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #include <GLFW/glfw3native.h>
+#include <glm/glm.hpp>
 
 struct Vertex
 {
@@ -18,28 +19,11 @@ struct Vertex
     f32 color[3];
 };
 
-struct vec4
-{
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 w;
-};
-
-// NOTE: Spriv uses a column major order, so these vectors are the columns of the matrix
-struct mat4
-{
-    vec4 x;
-    vec4 y;
-    vec4 z;
-    vec4 w;
-};
-
 struct UniformBuffer
 {
-    mat4 model;
-    mat4 view;
-    mat4 proj;
+    glm::mat4 model;
+    glm::mat4 camera;
+    glm::mat4 proj;
 };
 
 struct VertexInfo
@@ -158,7 +142,6 @@ class VulkanApp
     };
 
   private:
-
     f32 delta_time;
     const i32 MAX_FRAMES_IN_FLIGHT = 2;
     std::vector<char const *> instance_extensions = {"VK_EXT_debug_utils"};
@@ -863,7 +846,7 @@ class VulkanApp
     void create_descriptor_sets()
     {
         std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT);
-        for (i32 i =0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        for (i32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             layouts[i] = descriptor_set_layout;
         }
@@ -874,9 +857,18 @@ class VulkanApp
         descriptor_sets.resize(MAX_FRAMES_IN_FLIGHT);
         vkAllocateDescriptorSets(device, &alloc_info, descriptor_sets.data());
 
-        for (i32 i =0; i< MAX_FRAMES_IN_FLIGHT; i++)
+        for (i32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             VkDescriptorBufferInfo buffer_info = {uniform_buffers[i].buffer, 0, sizeof(UniformBuffer)};
+            VkWriteDescriptorSet write_descriptor_set = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write_descriptor_set.dstSet = descriptor_sets[i];
+            write_descriptor_set.dstBinding = 0;
+            write_descriptor_set.dstArrayElement = 0;
+            write_descriptor_set.descriptorCount = 1;
+            write_descriptor_set.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write_descriptor_set.pBufferInfo = &buffer_info;
+
+            vkUpdateDescriptorSets(device, 1, &write_descriptor_set, 0, nullptr);
         }
     }
 
@@ -919,6 +911,8 @@ class VulkanApp
         VkRect2D scissor = {{0, 0}, swapchain_info.extent};
 
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_sets[frame_index], 0, nullptr);
 
         vkCmdDrawIndexed(command_buffer, indices.size(), 1, 0, 0, 0);
 
@@ -982,6 +976,9 @@ class VulkanApp
         create_command_pool();
         create_vertex_buffer();
         create_index_buffer();
+        create_uniform_buffers();
+        create_descriptor_pool();
+        create_descriptor_sets();
         create_command_buffers();
         create_sync_objects();
     }
@@ -1005,6 +1002,8 @@ class VulkanApp
         vkDestroyPipeline(device, graphics_pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+        vkFreeDescriptorSets(device, descriptor_pool, 1, descriptor_sets.data());
+        vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
 
         for (i32 i = 0; i < swapchain_image_views.size(); i++)
         {
@@ -1016,6 +1015,10 @@ class VulkanApp
         vkFreeMemory(device, vertex_buffer.memory, nullptr);
         vkDestroyBuffer(device, index_buffer.buffer, nullptr);
         vkFreeMemory(device, index_buffer.memory, nullptr);
+        for (int i =0; i<MAX_FRAMES_IN_FLIGHT; i++){
+            vkDestroyBuffer(device, uniform_buffers[i].buffer, nullptr);
+            vkFreeMemory(device, uniform_buffers[i].memory, nullptr);
+        }
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
 
@@ -1030,21 +1033,17 @@ class VulkanApp
         vkDestroyInstance(instance, nullptr);
     }
 
-    void update_uniform_buffer(u32 frame_index)
+    void update_uniform_buffer(u32 frame_index, glm::mat4 camera)
     {
         UniformBuffer ubo;
-        ubo.model.x = {cos(delta_time), -sin(delta_time), 0, 0};
-        ubo.model.y = {sin(delta_time), cos(delta_time), 0, 0};
-        ubo.model.z = {0, 0, 1, 0};
-        ubo.model.w = {0, 0, 0, 1};
-
-        ubo.view = {{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0,0,1}};
-        ubo.proj = {{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0,0,1}};
+        ubo.model = {{cos(delta_time), -sin(delta_time), 0, 0}, {sin(delta_time), cos(delta_time), 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+        ubo.camera = camera;
+        ubo.proj = {{2.4142, 0, 0, 0}, {0, 2.4142, 0, 0}, {0, 0, 1.2222, 2.2222}, {0, 0, 1, 0}};
 
         memcpy(uniform_buffer_map[frame_index], &ubo, sizeof(UniformBuffer));
     }
 
-    void render()
+    void render(glm::mat4 camera_position)
     {
         delta_time += 0.0001f;
         u32 image_index;
@@ -1069,7 +1068,7 @@ class VulkanApp
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &semaphores_rendering_finished[image_index];
 
-        update_uniform_buffer(frame_index);
+        update_uniform_buffer(frame_index, camera_position);
 
         vkQueueSubmit(queue_family_info.graphics_queue, 1, &submit_info, fences_drawing_complete[frame_index]);
 
@@ -1091,6 +1090,13 @@ class VulkanApp
 
         return;
     }
+
+    void update_camera(glm::mat4 *camera_position)
+    {
+        glm::mat4 camera_location = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0,  -2*tan(delta_time),0, 1}};
+        glm::mat4 camera_angle = {{1,0,0,0},{0,cos(delta_time),-sin(delta_time),0},{0,sin(delta_time),cos(delta_time),0},{0,0,0,1}};
+        *camera_position = camera_angle * camera_location;
+    }
 };
 
 int main()
@@ -1100,11 +1106,14 @@ int main()
     Window *glfw_window = new Window(width, height);
     VulkanApp *vulkan_app = new VulkanApp(glfw_window);
 
+    glm::mat4 camera_position = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+
     printf("Entering Main Loop\n");
     while (!glfwWindowShouldClose(glfw_window->get_glfw_window()))
     {
         glfwPollEvents();
-        vulkan_app->render();
+        vulkan_app->update_camera(&camera_position);
+        vulkan_app->render(camera_position);
     }
 
     delete vulkan_app;

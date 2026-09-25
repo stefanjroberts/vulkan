@@ -5,7 +5,7 @@ struct VertexInput {
 
 struct UniformBuffer {
     float4x4 model;
-    float4x4 view;
+    float4x4 camera;
     float4x4 proj;
 };
 
@@ -21,7 +21,7 @@ struct VertexOutput
 VertexOutput vert_main(VertexInput input)
 {
     VertexOutput output;
-    output.position = mul(uniform_buffer.proj, mul(uniform_buffer.view, mul(uniform_buffer.model, float4(input.position, 0.0, 1.0))));
+    output.position = mul(uniform_buffer.proj,mul(uniform_buffer.camera, mul(uniform_buffer.model, float4(input.position, 2.0, 1.0))));
     output.color = input.color;
     return output;
 }
