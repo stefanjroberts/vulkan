@@ -18,6 +18,30 @@ struct Vertex
     f32 color[3];
 };
 
+struct vec4
+{
+    f32 x;
+    f32 y;
+    f32 z;
+    f32 w;
+};
+
+// NOTE: Spriv uses a column major order, so these vectors are the columns of the matrix
+struct mat4
+{
+    vec4 x;
+    vec4 y;
+    vec4 z;
+    vec4 w;
+};
+
+struct UniformBuffer
+{
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+};
+
 struct VertexInfo
 {
     u32 attribute_count = 2;
@@ -134,6 +158,8 @@ class VulkanApp
     };
 
   private:
+
+    f32 delta_time;
     const i32 MAX_FRAMES_IN_FLIGHT = 2;
     std::vector<char const *> instance_extensions = {"VK_EXT_debug_utils"};
     std::vector<char const *> instance_layers = {"VK_LAYER_KHRONOS_validation"};
@@ -153,6 +179,7 @@ class VulkanApp
     std::vector<VkImage> swapchain_images;
     SwapchainInfo swapchain_info;
     std::vector<VkImageView> swapchain_image_views;
+    VkDescriptorSetLayout descriptor_set_layout;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
     VkCommandPool command_pool;
@@ -166,6 +193,11 @@ class VulkanApp
 
     MemoryBuffer vertex_buffer;
     MemoryBuffer index_buffer;
+    std::vector<MemoryBuffer> uniform_buffers;
+    std::vector<void *> uniform_buffer_map;
+
+    VkDescriptorPool descriptor_pool;
+    std::vector<VkDescriptorSet> descriptor_sets;
 
   private:
     void create_instance()
@@ -545,6 +577,15 @@ class VulkanApp
         }
     }
 
+    void create_descriptor_set_layout()
+    {
+        VkDescriptorSetLayoutBinding uniform_buffer_binding = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo DSL_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        DSL_create_info.bindingCount = 1;
+        DSL_create_info.pBindings = &uniform_buffer_binding;
+        vkCreateDescriptorSetLayout(device, &DSL_create_info, nullptr, &descriptor_set_layout);
+    }
+
     void create_graphics_pipeline()
     {
         i32 shader_code_size;
@@ -612,7 +653,8 @@ class VulkanApp
         color_blend_state_create_info.pAttachments = &color_blend_attachment_state;
 
         VkPipelineLayoutCreateInfo pipeline_layout_create_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        pipeline_layout_create_info.setLayoutCount = 0;
+        pipeline_layout_create_info.setLayoutCount = 1;
+        pipeline_layout_create_info.pSetLayouts = &descriptor_set_layout;
         pipeline_layout_create_info.pushConstantRangeCount = 0;
         vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &pipeline_layout);
 
@@ -792,6 +834,52 @@ class VulkanApp
         vkFreeMemory(device, staging_buffer.memory, nullptr);
     }
 
+    void create_uniform_buffers()
+    {
+        for (i32 i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDeviceSize buffer_size = sizeof(UniformBuffer);
+            MemoryBuffer buffer = create_buffer(buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+            uniform_buffers.emplace_back(std::move(buffer));
+            void *buffer_map;
+            vkMapMemory(device, uniform_buffers.back().memory, 0, buffer_size, 0, &buffer_map);
+            uniform_buffer_map.emplace_back(buffer_map);
+        }
+    }
+
+    void create_descriptor_pool()
+    {
+        VkDescriptorPoolSize DP_size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, (u32)MAX_FRAMES_IN_FLIGHT};
+        VkDescriptorPoolCreateInfo DP_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        DP_create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        DP_create_info.maxSets = MAX_FRAMES_IN_FLIGHT;
+        DP_create_info.poolSizeCount = 1;
+        DP_create_info.pPoolSizes = &DP_size;
+
+        vkCreateDescriptorPool(device, &DP_create_info, nullptr, &descriptor_pool);
+    }
+
+    void create_descriptor_sets()
+    {
+        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT);
+        for (i32 i =0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            layouts[i] = descriptor_set_layout;
+        }
+        VkDescriptorSetAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        alloc_info.descriptorPool = descriptor_pool;
+        alloc_info.descriptorSetCount = layouts.size();
+        alloc_info.pSetLayouts = layouts.data();
+        descriptor_sets.resize(MAX_FRAMES_IN_FLIGHT);
+        vkAllocateDescriptorSets(device, &alloc_info, descriptor_sets.data());
+
+        for (i32 i =0; i< MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDescriptorBufferInfo buffer_info = {uniform_buffers[i].buffer, 0, sizeof(UniformBuffer)};
+        }
+    }
+
     void record_command_buffer(VkCommandBuffer command_buffer, u32 image_index)
     {
         VkCommandBufferBeginInfo command_buffer_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -889,6 +977,7 @@ class VulkanApp
         create_device();
         create_swapchain();
         create_image_views();
+        create_descriptor_set_layout();
         create_graphics_pipeline();
         create_command_pool();
         create_vertex_buffer();
@@ -915,6 +1004,7 @@ class VulkanApp
         vkDestroyCommandPool(device, command_pool, nullptr);
         vkDestroyPipeline(device, graphics_pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+        vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
 
         for (i32 i = 0; i < swapchain_image_views.size(); i++)
         {
@@ -940,8 +1030,23 @@ class VulkanApp
         vkDestroyInstance(instance, nullptr);
     }
 
+    void update_uniform_buffer(u32 frame_index)
+    {
+        UniformBuffer ubo;
+        ubo.model.x = {cos(delta_time), -sin(delta_time), 0, 0};
+        ubo.model.y = {sin(delta_time), cos(delta_time), 0, 0};
+        ubo.model.z = {0, 0, 1, 0};
+        ubo.model.w = {0, 0, 0, 1};
+
+        ubo.view = {{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0,0,1}};
+        ubo.proj = {{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0,0,1}};
+
+        memcpy(uniform_buffer_map[frame_index], &ubo, sizeof(UniformBuffer));
+    }
+
     void render()
     {
+        delta_time += 0.0001f;
         u32 image_index;
         vkWaitForFences(device, 1, &fences_drawing_complete[frame_index], VK_TRUE, UINT64_MAX);
 
@@ -963,6 +1068,8 @@ class VulkanApp
         submit_info.pCommandBuffers = &command_buffers[frame_index];
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &semaphores_rendering_finished[image_index];
+
+        update_uniform_buffer(frame_index);
 
         vkQueueSubmit(queue_family_info.graphics_queue, 1, &submit_info, fences_drawing_complete[frame_index]);
 
