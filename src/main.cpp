@@ -43,6 +43,20 @@ struct VertexInfo
     }
 };
 
+struct Input
+{
+    bool w;
+    bool a;
+    bool s;
+    bool d;
+    bool left;
+    bool right;
+    bool up;
+    bool down;
+};
+
+Input input = {};
+
 struct MemoryBuffer
 {
     VkBuffer buffer;
@@ -1015,7 +1029,8 @@ class VulkanApp
         vkFreeMemory(device, vertex_buffer.memory, nullptr);
         vkDestroyBuffer(device, index_buffer.buffer, nullptr);
         vkFreeMemory(device, index_buffer.memory, nullptr);
-        for (int i =0; i<MAX_FRAMES_IN_FLIGHT; i++){
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
             vkDestroyBuffer(device, uniform_buffers[i].buffer, nullptr);
             vkFreeMemory(device, uniform_buffers[i].memory, nullptr);
         }
@@ -1093,25 +1108,116 @@ class VulkanApp
 
     void update_camera(glm::mat4 *camera_position)
     {
-        glm::mat4 camera_location = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0,  -2*tan(delta_time),0, 1}};
-        glm::mat4 camera_angle = {{1,0,0,0},{0,cos(delta_time),-sin(delta_time),0},{0,sin(delta_time),cos(delta_time),0},{0,0,0,1}};
-        *camera_position = camera_angle * camera_location;
+        glm::mat4 camera_location = {
+            {1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0.001 * input.a - 0.001 * input.d, 0, 0.001 * input.s - 0.001 * input.w, 1}};
+        glm::mat4 camera_xrot = {{cos(0.0001 * input.left - 0.0001 * input.right), 0, -sin(0.0001 * input.left - 0.0001 * input.right), 0},
+                                 {0, 1, 0, 0},
+                                 {sin(0.0001 * input.left - 0.0001 * input.right), 0, cos(0.0001 * input.left - 0.0001 * input.right), 0},
+                                 {0, 0, 0, 1}};
+        glm::mat4 camera_yrot = {{1, 0, 0, 0},
+                                 {0, cos(0.0001 * input.up - 0.0001 * input.down), -sin(0.0001 * input.up - 0.0001 * input.down), 0},
+                                 {0, sin(0.0001 * input.up - 0.0001 * input.down), cos(0.0001 * input.up - 0.0001 * input.down), 0},
+                                 {0, 0, 0, 1}};
+        *camera_position = camera_location * (*camera_position);
+        *camera_position = camera_xrot * (*camera_position);
+        *camera_position = camera_yrot * (*camera_position);
     }
 };
+
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
+{
+    if (key == GLFW_KEY_W && action == GLFW_PRESS)
+    {
+        input.w = true;
+    }
+    if (key == GLFW_KEY_W && action == GLFW_RELEASE)
+    {
+        input.w = false;
+    }
+
+    if (key == GLFW_KEY_S && action == GLFW_PRESS)
+    {
+        input.s = true;
+    }
+    if (key == GLFW_KEY_S && action == GLFW_RELEASE)
+    {
+        input.s = false;
+    }
+
+    if (key == GLFW_KEY_A && action == GLFW_PRESS)
+    {
+        input.a = true;
+    }
+    if (key == GLFW_KEY_A && action == GLFW_RELEASE)
+    {
+        input.a = false;
+    }
+
+    if (key == GLFW_KEY_D && action == GLFW_PRESS)
+    {
+        input.d = true;
+    }
+    if (key == GLFW_KEY_D && action == GLFW_RELEASE)
+    {
+        input.d = false;
+    }
+
+    if (key == GLFW_KEY_LEFT && action == GLFW_PRESS)
+    {
+        input.left = true;
+    }
+    if (key == GLFW_KEY_LEFT && action == GLFW_RELEASE)
+    {
+        input.left = false;
+    }
+
+    if (key == GLFW_KEY_RIGHT && action == GLFW_PRESS)
+    {
+        input.right = true;
+    }
+    if (key == GLFW_KEY_RIGHT && action == GLFW_RELEASE)
+    {
+        input.right = false;
+    }
+
+if (key == GLFW_KEY_UP && action == GLFW_PRESS)
+    {
+        input.up = true;
+    }
+    if (key == GLFW_KEY_UP && action == GLFW_RELEASE)
+    {
+        input.up = false;
+    }
+
+    if (key == GLFW_KEY_DOWN && action == GLFW_PRESS)
+    {
+        input.down = true;
+    }
+    if (key == GLFW_KEY_DOWN && action == GLFW_RELEASE)
+    {
+        input.down = false;
+    }
+    
+}
 
 int main()
 {
     u32 width = 800;
     u32 height = 600;
     Window *glfw_window = new Window(width, height);
+    glfwSetKeyCallback(glfw_window->get_glfw_window(), key_callback);
+
     VulkanApp *vulkan_app = new VulkanApp(glfw_window);
 
     glm::mat4 camera_position = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+
+    camera_position[1][2] = 1;
 
     printf("Entering Main Loop\n");
     while (!glfwWindowShouldClose(glfw_window->get_glfw_window()))
     {
         glfwPollEvents();
+
         vulkan_app->update_camera(&camera_position);
         vulkan_app->render(camera_position);
     }
