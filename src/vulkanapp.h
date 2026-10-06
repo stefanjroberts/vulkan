@@ -269,12 +269,25 @@ class VulkanApp
 
     void render(glm::mat4 camera_position)
     {
+
+        vkQueueWaitIdle(queue_family_info.graphics_queue);
+        vkDeviceWaitIdle(device);
+
         delta_time += 0.0001f;
         u32 image_index;
         vkWaitForFences(device, 1, &fences_drawing_complete[frame_index], VK_TRUE, UINT64_MAX);
 
         VkResult acquire_next_image_result =
             vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphores_presentation_complete[frame_index], nullptr, &image_index);
+
+        if (acquire_next_image_result == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            recreate_swapchain(); // TODO: There is no easy way to debug this currently on my system, need to test on other devices.
+            return;
+        }
+
+        update_uniform_buffer(frame_index, camera_position);
+
 
         vkResetFences(device, 1, &fences_drawing_complete[frame_index]);
 
@@ -292,7 +305,6 @@ class VulkanApp
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &semaphores_rendering_finished[image_index];
 
-        update_uniform_buffer(frame_index, camera_position);
 
         vkQueueSubmit(queue_family_info.graphics_queue, 1, &submit_info, fences_drawing_complete[frame_index]);
 
@@ -306,11 +318,6 @@ class VulkanApp
         vkQueuePresentKHR(queue_family_info.presentation_queue, &present_info);
 
         frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
-
-        if (acquire_next_image_result == VK_ERROR_OUT_OF_DATE_KHR)
-        {
-            recreate_swapchain(); // TODO: There is no easy way to debug this currently on my system, need to test on other devices.
-        }
 
         return;
     }

@@ -12,7 +12,7 @@
             "program": "${workspaceFolder}/bin/main",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/bin",
             "environment": [],
             "MIMode": "gdb",
             "setupCommands": [
